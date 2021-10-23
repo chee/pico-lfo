@@ -36,9 +36,9 @@ midi = adafruit_midi.MIDI(midi_out=usb_midi.ports[1], out_channel=0)
 
 oled_height = 32
 oled_width = 128
-oled = adafruit_ssd1306.SSD1306_I2C(oled_width, oled_height, i2c)
-oled.fill(0)
-oled.show()
+# oled = adafruit_ssd1306.SSD1306_I2C(oled_width, oled_height, i2c)
+# oled.fill(0)
+# oled.show()
 
 
 class LFO_STATE:
@@ -47,36 +47,7 @@ class LFO_STATE:
     fast = 2
 
 
-# todo make Lfo class that keeps all this info together
-# possibly extend from Pad class
 num_lfos = 8
-lfo_states = [LFO_STATE.off] * num_lfos
-lfo_values = [0.0] * num_lfos
-lfo_dirs = [1] * num_lfos
-
-
-def lfo_line(lfo_num, lfo_val):
-    line_height = oled_height // num_lfos
-    # TODO consider removing gap
-    oled.fill_rect(
-        0,
-        lfo_num * line_height,
-        int(lfo_val * oled_width),
-        line_height - 1,
-        1,
-    )
-
-
-held = [False] * 16
-mode = 0
-tick = 0
-
-
-lfo_incs = {LFO_STATE.off: 0, LFO_STATE.slow: 0.01, LFO_STATE.fast: 0.1}
-
-
-bpm_mode = False
-bpm = 128
 
 
 def read_butts():
@@ -95,64 +66,133 @@ def read_butts():
     return pressed
 
 
-def inc_lfo(idx, state):
-    val = lfo_values[idx]
-    inc = lfo_incs[state]
-    dire = lfo_dirs[idx]
-    lfo_values[idx] += inc * dire
-    if val >= 1.0:
-        lfo_dirs[idx] = -1
-    elif val <= 0:
-        lfo_dirs[idx] = 1
+class Lfo:
+    OFF = "off"
+    SLOW = "slow"
+    FAST = "fast"
+    state = OFF
+    idx = 0
+    value = 0.0
+    direction = +1
+    held = False
+    incs = {OFF: 0, SLOW: 0.01, FAST: 0.1}
+    start = 0.0
+    end = 1.0
 
+    def __init__(self, idx):
+        self.idx = idx
+
+    def draw(self):
+        line_height = oled_height // num_lfos
+        # TODO consider removing gap
+        # oled.fill_rect(
+        #     0, self.idx * line_height, int(self.value * oled_width), line_height - 1, 1
+        # )
+
+    def pressed(self, butts):
+        return butts[self.idx]
+
+    def step(self):
+        inc = self.incs[self.state]
+        self.value += inc * self.direction
+        if self.value <= self.start:
+            self.value = self.start
+            self.direction = 1
+        elif self.value >= self.end:
+            self.value = self.end
+            self.direction = -1
+        color_offset = lfo.int(128)
+        if lfo.off:
+            self.light((0, 0, 0))
+        elif lfo.slow:
+            self.light((255, color_offset, 0))
+        elif lfo.fast:
+            self.light((0, color_offset, 255))
+
+    def light(self, color):
+        lights[self.idx] = color
+
+    def int(self, mul):
+        return int(self.value * mul)
+
+    def send(self):
+        midi.send(ControlChange(self.idx, self.int(127)))
+
+    @property
+    def off(self):
+        return self.state == Lfo.OFF
+
+    @property
+    def slow(self):
+        return self.state == Lfo.SLOW
+
+    @property
+    def fast(self):
+        return self.state == Lfo.FAST
+
+    def press(self):
+        if self.held:
+            return
+        elif self.off:
+            self.state = Lfo.SLOW
+        elif self.slow:
+            self.state = Lfo.FAST
+        elif self.fast:
+            self.state = Lfo.OFF
+        self.held = True
+
+    def release(self):
+        self.held = False
+
+
+bpm_mode = False
+bpm = 128
+
+lfos = [Lfo(0)] * num_lfos
+
+for idx in range(num_lfos):
+    lfos[idx] = Lfo(idx)
+
+
+class Mode:
+    NORMAL = "normal"
+    TEACHING = "teaching"
+    SET_BPM = "bpm"
+    SET_LIMIT_START = "limit start"
+    SET_LIMIT_END = "limit end"
+    SET_CHANNEL = "channel"
+    current = NORMAL
+
+
+mode = Mode()
 
 while True:
     # todo use bpm
-    time.sleep(0.01)
-    oled.fill(0)
+    time.sleep(0.1)
+    # oled.fill(0)
     # todo set bpm mode (press B then type a number then press F to select. press B again to cancel)
     # todo set channel mode (press C, type number to set midi channel, then F to select. press B to cancel)
     # in bpm and channel mode: numbers should be white, B should be red and F should be green
-    # todo teaching mode (hold F, disables LFO, lets you teach cc to machine)
+    # todo teaching mode (press F, disables LFO, press a button to send the CC for that lfo once)
     # todo set limits mode (press A, press a control, press a number and then select start (0-A) and end (0-A))
 
-    for idx, state in enumerate(lfo_states):
-        inc_lfo(idx, state)
-        val = lfo_values[idx]
-        if val < 0:
-            val = 0
-        if val > 1:
-            val = 1
-        col_offset = int(128 * val)
-        if state == LFO_STATE.off:
-            lights[idx] = (0, 0, 0)
-        elif state == LFO_STATE.slow:
-            lights[idx] = (255, col_offset, 0)
-        elif state == LFO_STATE.fast:
-            lights[idx] = (0, col_offset, 255)
+    if mode.current == mode.TEACHING:
+        continue
 
-        if state != LFO_STATE.off:
-            midi.send(ControlChange(idx, int(val * 127)))
+    butts = read_butts()
 
-        lfo_line(idx, val)
+    for lfo in lfos:
+        lfo.step()
 
-    for idx, pressed in enumerate(read_butts()):
-        if pressed and not held[idx]:
-            if idx <= num_lfos:
-                if lfo_states[idx] == LFO_STATE.off:
-                    lfo_states[idx] = LFO_STATE.slow
-                elif lfo_states[idx] == LFO_STATE.slow:
-                    lfo_states[idx] = LFO_STATE.fast
-                elif lfo_states[idx] == LFO_STATE.fast:
-                    lfo_states[idx] = LFO_STATE.off
-                pass
-            # todo initiate BPM mode (so this is holding B and typing a number)
-            held[idx] = True
-        elif pressed and held[idx]:
-            # todo BPM mode (take another number)
-            pass
-        elif not pressed and held[idx]:
-            # todo BPM mode (set bpm)
-            held[idx] = False
-    oled.show()
+        if not lfo.off:
+            lfo.send()
+
+        lfo.draw()
+
+        if lfo.pressed(butts):
+            lfo.press()
+        else:
+            lfo.release()
+
+    # oled.show()
     lights.show()
