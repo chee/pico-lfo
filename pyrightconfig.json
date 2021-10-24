@@ -1,0 +1,7 @@
+{
+	"stubPath": "./stubs",
+	"include": [
+		"./code.py",
+		"./lib/*"
+	]
+}
